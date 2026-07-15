@@ -176,7 +176,7 @@ pub const extract = struct {
     ///     return Response.empty;
     /// }
     /// ```
-    pub const WebSocket = @import("extract/websocket.zig");
+    pub const WebSocket = @import("extract/WebSocket.zig");
 
     /// Creates a Header extractor type for a specific HTTP header name.
     ///
