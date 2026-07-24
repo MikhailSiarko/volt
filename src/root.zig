@@ -107,7 +107,22 @@ pub const Response = @import("core").Response;
 /// ```
 pub const Router = @import("router.zig").Router;
 
-pub const extract = @import("extract/root.zig");
+/// Extractors for request parameters, headers, and body content.
+///
+/// Example usage:
+/// ```zig
+/// fn myHandler(ctx: Context, state: MyState, data: Json(MyStruct)) !Response {
+///     // Automatic extraction via parameter type:
+///     // fn myHandler(ctx: Context, state: MyState, data: Json(MyStruct)) !Response
+///     // Manual extraction for full control:
+///     const data = try extract.Json(MyStruct).init(ctx);
+///     return Response.ok(ctx.req_arena, null, null);
+/// }
+/// ```
+pub const extract = if (@import("options").extract_enabled)
+    @import("extract")
+else
+    @compileError("Built-in extractors are not enabled: set 'extract_enabled' option to 'true' in volt's dependency import");
 
 test {
     const refAllDecls = @import("std").testing.refAllDecls;
