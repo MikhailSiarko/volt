@@ -6,9 +6,7 @@ const AllocatorError = std.mem.Allocator.Error;
 const ReaderError = std.Io.Reader.Error;
 const ParseError = std.json.ParseError(std.json.Scanner);
 
-const Context = @import("../Context.zig");
-
-const EXTRACTOR_ID: []const u8 = "VOLT_JSON_EXTRACTOR";
+const Context = @import("core").Context;
 
 fn extract(comptime T: type, arena: Allocator, req: *Request) JsonError!T {
     if (!req.head.method.requestHasBody()) {
@@ -52,33 +50,22 @@ pub const JsonError = RequestValidationError || AllocatorError || ReaderError ||
 
 pub fn Json(comptime T: type) type {
     return struct {
-        pub const ID: []const u8 = EXTRACTOR_ID;
-        pub const PAYLOAD_TYPE: type = T;
+        const Self = @This();
 
         result: JsonError!T,
 
-        pub fn init(ctx: Context) JsonError!T {
-            return try extract(T, ctx.req_arena, ctx.raw_req);
+        pub fn fromContext(ctx: Context) Self {
+            return .{ .result = extract(T, ctx.req_arena, ctx.raw_req) };
         }
     };
 }
 
-pub const Resolver = struct {
-    pub const ID: []const u8 = EXTRACTOR_ID;
-
-    pub fn resolve(comptime Extractor: type, ctx: Context) Extractor {
-        comptime assert(@hasDecl(Extractor, "PAYLOAD_TYPE"));
-        const result = extract(@field(Extractor, "PAYLOAD_TYPE"), ctx.req_arena, ctx.raw_req);
-        return .{ .result = result };
-    }
-};
-
-const Server = std.http.Server;
-const Reader = std.Io.Reader;
-const Writer = std.Io.Writer;
-const testing = std.testing;
-
 test "init returns extractor error when content type header is missing" {
+    const Server = std.http.Server;
+    const Reader = std.Io.Reader;
+    const Writer = std.Io.Writer;
+    const testing = std.testing;
+
     const Person = struct {
         name: []const u8,
         age: u7,
@@ -101,10 +88,16 @@ test "init returns extractor error when content type header is missing" {
         .raw_req = &http_req,
     };
 
-    try testing.expectError(RequestValidationError.ContentTypeMissing, Json(Person).init(test_ctx));
+    const json = Json(Person).fromContext(test_ctx);
+    try testing.expectError(RequestValidationError.ContentTypeMissing, json.result);
 }
 
 test "init returns RequestBodyMissing for methods without a body (GET)" {
+    const Server = std.http.Server;
+    const Reader = std.Io.Reader;
+    const Writer = std.Io.Writer;
+    const testing = std.testing;
+
     const Person = struct {
         name: []const u8,
         age: u8,
@@ -129,10 +122,16 @@ test "init returns RequestBodyMissing for methods without a body (GET)" {
         .raw_req = &http_req,
     };
 
-    try testing.expectError(RequestValidationError.RequestBodyMissing, Json(Person).init(test_ctx));
+    const json = Json(Person).fromContext(test_ctx);
+    try testing.expectError(RequestValidationError.RequestBodyMissing, json.result);
 }
 
 test "init returns ContentLengthMissing when header is absent" {
+    const Server = std.http.Server;
+    const Reader = std.Io.Reader;
+    const Writer = std.Io.Writer;
+    const testing = std.testing;
+
     const Person = struct {
         name: []const u8,
         age: u8,
@@ -157,10 +156,16 @@ test "init returns ContentLengthMissing when header is absent" {
         .raw_req = &http_req,
     };
 
-    try testing.expectError(RequestValidationError.ContentLengthMissing, Json(Person).init(test_ctx));
+    const json = Json(Person).fromContext(test_ctx);
+    try testing.expectError(RequestValidationError.ContentLengthMissing, json.result);
 }
 
 test "init returns EmptyRequestBody when content length is zero" {
+    const Server = std.http.Server;
+    const Reader = std.Io.Reader;
+    const Writer = std.Io.Writer;
+    const testing = std.testing;
+
     const Person = struct {
         name: []const u8,
         age: u8,
@@ -185,10 +190,16 @@ test "init returns EmptyRequestBody when content length is zero" {
         .raw_req = &http_req,
     };
 
-    try testing.expectError(RequestValidationError.EmptyRequestBody, Json(Person).init(test_ctx));
+    const json = Json(Person).fromContext(test_ctx);
+    try testing.expectError(RequestValidationError.EmptyRequestBody, json.result);
 }
 
 test "init returns InvalidContentType when content type header is incorrect" {
+    const Server = std.http.Server;
+    const Reader = std.Io.Reader;
+    const Writer = std.Io.Writer;
+    const testing = std.testing;
+
     const Person = struct {
         name: []const u8,
         age: u8,
@@ -213,10 +224,16 @@ test "init returns InvalidContentType when content type header is incorrect" {
         .raw_req = &http_req,
     };
 
-    try testing.expectError(RequestValidationError.InvalidContentType, Json(Person).init(test_ctx));
+    const json = Json(Person).fromContext(test_ctx);
+    try testing.expectError(RequestValidationError.InvalidContentType, json.result);
 }
 
 test "init successfully parses valid JSON body" {
+    const Server = std.http.Server;
+    const Reader = std.Io.Reader;
+    const Writer = std.Io.Writer;
+    const testing = std.testing;
+
     const Person = struct {
         name: []const u8,
         age: u8,
@@ -242,12 +259,22 @@ test "init successfully parses valid JSON body" {
         .raw_req = &http_req,
     };
 
-    const person = try Json(Person).init(test_ctx);
+    const json = Json(Person).fromContext(test_ctx);
+    const person = json.result catch {
+        try testing.expect(false);
+        return;
+    };
+
     try testing.expectEqualStrings("Bob", person.name);
     try testing.expectEqual(@as(u8, 30), person.age);
 }
 
 test "init surfaces parse errors for invalid JSON" {
+    const Server = std.http.Server;
+    const Reader = std.Io.Reader;
+    const Writer = std.Io.Writer;
+    const testing = std.testing;
+
     const Person = struct {
         name: []const u8,
         age: u8,
@@ -277,7 +304,8 @@ test "init surfaces parse errors for invalid JSON" {
         .raw_req = &http_req,
     };
 
-    _ = Json(Person).init(test_ctx) catch |err| {
+    const json = Json(Person).fromContext(test_ctx);
+    _ = json.result catch |err| {
         // Ensure it's not one of the simple request validation errors
         try testing.expect(err != RequestValidationError.RequestBodyMissing);
         try testing.expect(err != RequestValidationError.ContentTypeMissing);
@@ -289,37 +317,4 @@ test "init surfaces parse errors for invalid JSON" {
 
     // If init unexpectedly succeeded, fail the test
     try testing.expect(false);
-}
-
-test "Resolver.resolve returns parsed payload in result" {
-    const Person = struct {
-        name: []const u8,
-        age: u8,
-    };
-
-    const body = "{\"name\":\"Ana\",\"age\":28}";
-    const req_bytes = std.fmt.comptimePrint(
-        "POST /person HTTP/1.1\r\nContent-Type: application/json\r\nContent-Length: {d}\r\n\r\n{s}",
-        .{ body.len, body },
-    );
-
-    var stream_buf_reader = Reader.fixed(req_bytes);
-    var write_buffer: [4096]u8 = undefined;
-    var stream_buf_writer = Writer.fixed(&write_buffer);
-    var http_server = Server.init(&stream_buf_reader, &stream_buf_writer);
-    var http_req = try http_server.receiveHead();
-
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-
-    const test_ctx: Context = .{
-        .io = undefined,
-        .req_arena = arena.allocator(),
-        .raw_req = &http_req,
-    };
-
-    const resolved = Resolver.resolve(Json(Person), test_ctx);
-    const person = try resolved.result;
-    try testing.expectEqualStrings("Ana", person.name);
-    try testing.expectEqual(@as(u8, 28), person.age);
 }

@@ -2,42 +2,12 @@ const std = @import("std");
 const Request = std.http.Server.Request;
 const Allocator = std.mem.Allocator;
 const HttpRequest = std.http.Server.Request;
-const Context = @import("Context.zig");
-const Response = @import("Response.zig");
+const core = @import("core");
+const Context = core.Context;
+const Response = core.Response;
 const ArgsTuple = std.meta.ArgsTuple;
-const FnParam = std.builtin.Type.Fn.Param;
 const log = std.log;
-
-const WebSocket = @import("extract/WebSocket.zig");
-const JsonResolver = @import("extract/json.zig").Resolver;
-const QueryResolver = @import("extract/query.zig").Resolver;
-const TypedQueryResolver = @import("extract/typed_query.zig").Resolver;
-const HeaderResolver = @import("extract/header.zig").Resolver;
-const RouteParamResolver = @import("extract/route_param.zig").Resolver;
-const FormResolver = @import("extract/form.zig").Resolver;
-
-const extractor_resolvers = .{
-    JsonResolver,
-    QueryResolver,
-    TypedQueryResolver,
-    HeaderResolver,
-    FormResolver,
-    RouteParamResolver,
-};
-
-fn matches(comptime Extractor: type, comptime EXTRACTOR_ID: []const u8) bool {
-    if (!@hasDecl(Extractor, "ID")) return false;
-    return std.mem.eql(u8, @field(Extractor, "ID"), EXTRACTOR_ID);
-}
-
-fn getArgsTypes(func_params: []const FnParam) []const type {
-    comptime var func_param_types: [func_params.len]type = undefined;
-    inline for (func_params, 0..) |param_type, i| {
-        func_param_types[i] = param_type.type.?;
-    }
-
-    return &func_param_types;
-}
+const extractor = @import("extractor.zig");
 
 pub fn Router(comptime State: type) type {
     return struct {
@@ -67,17 +37,10 @@ pub fn Router(comptime State: type) type {
                             switch (field_type) {
                                 Context => args[i] = ctx,
                                 State => args[i] = state,
-                                WebSocket => args[i] = .{ .result = WebSocket.init(ctx) },
                                 else => |Arg| {
-                                    comptime var resolved = false;
-                                    inline for (extractor_resolvers) |Resolver| {
-                                        if (!resolved and comptime matches(Arg, Resolver.ID)) {
-                                            args[i] = Resolver.resolve(Arg, ctx);
-                                            resolved = true;
-                                        }
-                                    }
-
-                                    if (!resolved) {
+                                    if (comptime extractor.isExtractor(Arg)) {
+                                        args[i] = Arg.fromContext(ctx);
+                                    } else {
                                         @compileError("unable to resolve parameter of type " ++ @typeName(field_type));
                                     }
                                 },
@@ -326,7 +289,6 @@ pub fn Router(comptime State: type) type {
 
         fn executeHandler(handler: Router(State).Handler, ctx: Context, state: State) !void {
             const res = handler.execute(ctx, state) catch |err| {
-                if (isMemberOfErrorSet(WebSocket.WebSocketError, err)) return;
                 try ctx.raw_req.respond(@errorName(err), .{ .status = .internal_server_error });
                 return;
             };
@@ -494,35 +456,6 @@ pub fn Router(comptime State: type) type {
     };
 }
 
-fn isMemberOfErrorSet(comptime T: type, err: anyerror) bool {
-    const info = @typeInfo(T);
-    if (info != .error_set) @compileError("T should be an error set");
-
-    if (info.error_set.error_names) |error_names| {
-        inline for (error_names) |err_name| {
-            if (err == @field(T, err_name)) return true;
-        }
-    }
-
-    return false;
-}
-
-test "isMemberOfErrorSet returns true for member" {
-    const AppError = error{ NotFound, InvalidPayload };
-    try std.testing.expect(isMemberOfErrorSet(AppError, error.NotFound));
-}
-
-test "isMemberOfErrorSet returns false for non-member" {
-    const AppError = error{ NotFound, InvalidPayload };
-    try std.testing.expect(!isMemberOfErrorSet(AppError, error.OutOfMemory));
-}
-
-test "isMemberOfErrorSet works with another error set" {
-    const NetworkError = error{ Timeout, ConnectionReset };
-    try std.testing.expect(isMemberOfErrorSet(NetworkError, error.Timeout));
-    try std.testing.expect(!isMemberOfErrorSet(NetworkError, error.NotFound));
-}
-
 test "handleRequest returns 404 for unknown route" {
     var router: Router(void) = .init(std.testing.allocator, {});
     defer router.deinit(std.testing.allocator);
@@ -570,13 +503,11 @@ test "handleRequest returns 405 for method mismatch" {
 }
 
 test "handleRequest returns 405 with Allow header for parametric route mismatch" {
-    const RouteParam = @import("extract/route_param.zig").RouteParam;
     var router: Router(void) = .init(std.testing.allocator, {});
     defer router.deinit(std.testing.allocator);
 
     const handlers = struct {
-        fn putOnly(ctx: Context, id: RouteParam("id")) !Response {
-            _ = id;
+        fn putOnly(ctx: Context) !Response {
             return Response.text(ctx.req_arena, .ok, "ok", null);
         }
     };
@@ -599,7 +530,6 @@ test "handleRequest returns 405 with Allow header for parametric route mismatch"
 }
 
 test "handleRequest falls back to parametric method when exact path lacks method" {
-    const RouteParam = @import("extract/route_param.zig").RouteParam;
     var router: Router(void) = .init(std.testing.allocator, {});
     defer router.deinit(std.testing.allocator);
 
@@ -608,8 +538,7 @@ test "handleRequest falls back to parametric method when exact path lacks method
             return Response.text(ctx.req_arena, .ok, "exact-post", null);
         }
 
-        fn paramGet(ctx: Context, id: RouteParam("id")) !Response {
-            _ = id;
+        fn paramGet(ctx: Context) !Response {
             return Response.text(ctx.req_arena, .ok, "param-get", null);
         }
     };
@@ -633,7 +562,6 @@ test "handleRequest falls back to parametric method when exact path lacks method
 }
 
 test "handleRequest returns combined Allow header for overlapping path matches" {
-    const RouteParam = @import("extract/route_param.zig").RouteParam;
     var router: Router(void) = .init(std.testing.allocator, {});
     defer router.deinit(std.testing.allocator);
 
@@ -642,8 +570,7 @@ test "handleRequest returns combined Allow header for overlapping path matches" 
             return Response.text(ctx.req_arena, .ok, "exact-post", null);
         }
 
-        fn paramPut(ctx: Context, id: RouteParam("id")) !Response {
-            _ = id;
+        fn paramPut(ctx: Context) !Response {
             return Response.text(ctx.req_arena, .ok, "param-put", null);
         }
     };
@@ -667,37 +594,7 @@ test "handleRequest returns combined Allow header for overlapping path matches" 
     try std.testing.expect(std.mem.find(u8, output, "PUT") != null);
 }
 
-test "handleRequest ignores websocket extractor errors" {
-    var router: Router(void) = .init(std.testing.allocator, {});
-    defer router.deinit(std.testing.allocator);
-
-    const handlers = struct {
-        fn noop(socket: *std.http.Server.WebSocket) !void {
-            _ = socket;
-        }
-
-        fn websocketRoute(ctx: Context, ws: WebSocket) !Response {
-            try ws.onConnected(noop, .{});
-            return Response.ok(ctx.req_arena, null, null);
-        }
-    };
-
-    try router.get(std.testing.allocator, "/ws", handlers.websocketRoute);
-
-    const req_bytes = "GET /ws HTTP/1.1\r\n\r\n";
-    var stream_buf_reader = std.Io.Reader.fixed(req_bytes);
-    var write_buffer: [4096]u8 = undefined;
-    var stream_buf_writer = std.Io.Writer.fixed(&write_buffer);
-    var http_server = std.http.Server.init(&stream_buf_reader, &stream_buf_writer);
-    var req = try http_server.receiveHead();
-
-    try router.handleRequest(std.testing.io, std.testing.allocator, &req);
-
-    try std.testing.expectEqual(@as(usize, 0), stream_buf_writer.end);
-}
-
 test "findHandler prefers exact route over parametric overlap" {
-    const RouteParam = @import("extract/route_param.zig").RouteParam;
     var router: Router(void) = .init(std.testing.allocator, {});
     defer router.deinit(std.testing.allocator);
 
@@ -706,8 +603,7 @@ test "findHandler prefers exact route over parametric overlap" {
             return Response.text(ctx.req_arena, .ok, "exact", null);
         }
 
-        fn param(ctx: Context, id: RouteParam("id")) !Response {
-            _ = id;
+        fn param(ctx: Context) !Response {
             return Response.text(ctx.req_arena, .ok, "param", null);
         }
     };
@@ -730,19 +626,15 @@ test "findHandler prefers exact route over parametric overlap" {
 }
 
 test "handleRequest applies parametric precedence by literal segments" {
-    const RouteParam = @import("extract/route_param.zig").RouteParam;
     var router: Router(void) = .init(std.testing.allocator, {});
     defer router.deinit(std.testing.allocator);
 
     const handlers = struct {
-        fn generic(ctx: Context, entity: RouteParam("entity"), id: RouteParam("id")) !Response {
-            _ = entity;
-            _ = id;
+        fn generic(ctx: Context) !Response {
             return Response.text(ctx.req_arena, .ok, "generic", null);
         }
 
-        fn users(ctx: Context, id: RouteParam("id")) !Response {
-            _ = id;
+        fn users(ctx: Context) !Response {
             return Response.text(ctx.req_arena, .ok, "users", null);
         }
     };
@@ -765,13 +657,11 @@ test "handleRequest applies parametric precedence by literal segments" {
 }
 
 test "router rejects duplicate placeholder names in same route" {
-    const RouteParam = @import("extract/route_param.zig").RouteParam;
     var router: Router(void) = .init(std.testing.allocator, {});
     defer router.deinit(std.testing.allocator);
 
     const handlers = struct {
-        fn duplicate(ctx: Context, id: RouteParam("id")) !Response {
-            _ = id;
+        fn duplicate(ctx: Context) !Response {
             return Response.text(ctx.req_arena, .ok, "ok", null);
         }
     };

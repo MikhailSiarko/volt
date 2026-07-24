@@ -1,15 +1,13 @@
 const std = @import("std");
-const StructField = std.builtin.Type.StructField;
 const Allocator = std.mem.Allocator;
 const AllocatorError = std.mem.Allocator.Error;
 const Request = std.http.Server.Request;
 
-const utils = @import("utils.zig");
-const Context = @import("../Context.zig");
+const url = @import("url.zig");
+const Context = @import("core").Context;
+const QueryIterator = @import("QueryIterator.zig");
 
-const EXTRACTOR_ID: []const u8 = "VOLT_TYPED_QUERY_EXTRACTOR";
-
-const TypedQueryError = AllocatorError || utils.ParseError;
+const TypedQueryError = AllocatorError || url.ParseError;
 
 fn assert(comptime T: type) void {
     const type_info = @typeInfo(T);
@@ -17,7 +15,10 @@ fn assert(comptime T: type) void {
         @compileError("Type is not a struct");
     }
 
-    inline for (type_info.@"struct".field_types, type_info.@"struct".field_names) |field_type, field_name| {
+    const field_types = type_info.@"struct".field_types;
+    const field_names = type_info.@"struct".field_names;
+
+    inline for (field_types, field_names) |field_type, field_name| {
         if (@typeInfo(field_type) != .optional) {
             @compileError(field_name ++ " field must be of type optional");
         }
@@ -25,7 +26,7 @@ fn assert(comptime T: type) void {
 }
 
 fn extract(comptime T: type, arena: Allocator, req: *Request) TypedQueryError!?*T {
-    var query_it = utils.queryIterator(req.head.target) orelse return null;
+    var query_it = QueryIterator.init(req.head.target) orelse return null;
     var typed_query = try arena.create(T);
     errdefer arena.destroy(typed_query);
 
@@ -38,13 +39,13 @@ fn extract(comptime T: type, arena: Allocator, req: *Request) TypedQueryError!?*
 
     while (query_it.next()) |entry| {
         const value = entry.value orelse continue;
-        const key = try utils.decodeUrl(arena, entry.key);
+        const key = try url.decode(arena, entry.key);
 
         inline for (field_names, field_types) |field_name, field_type| {
             if (std.ascii.eqlIgnoreCase(key, field_name)) {
-                const decoded_value = try utils.decodeUrl(arena, value);
+                const decoded_value = try url.decode(arena, value);
                 const child_field_type = @typeInfo(field_type).optional.child;
-                @field(typed_query, field_name) = try utils.parse(child_field_type, decoded_value);
+                @field(typed_query, field_name) = try url.parse(child_field_type, decoded_value);
             }
         }
     }
@@ -55,32 +56,22 @@ fn extract(comptime T: type, arena: Allocator, req: *Request) TypedQueryError!?*
 pub fn TypedQuery(comptime T: type) type {
     assert(T);
     return struct {
-        pub const ID: []const u8 = EXTRACTOR_ID;
-        pub const PAYLOAD_TYPE: type = T;
+        const Self = @This();
 
         result: TypedQueryError!?*T,
 
-        pub fn init(ctx: Context) TypedQueryError!?*T {
-            return try extract(T, ctx.req_arena, ctx.raw_req);
+        pub fn fromContext(ctx: Context) Self {
+            return .{ .result = extract(T, ctx.req_arena, ctx.raw_req) };
         }
     };
 }
 
-pub const Resolver = struct {
-    pub const ID: []const u8 = EXTRACTOR_ID;
-
-    pub fn resolve(comptime Extractor: type, ctx: Context) Extractor {
-        comptime std.debug.assert(@hasDecl(Extractor, "PAYLOAD_TYPE"));
-        return .{ .result = extract(@field(Extractor, "PAYLOAD_TYPE"), ctx.req_arena, ctx.raw_req) };
-    }
-};
-
-const testing = std.testing;
-const Server = std.http.Server;
-const Reader = std.Io.Reader;
-const Writer = std.Io.Writer;
-
 test "TypedQuery.init returns null when no query string is present" {
+    const testing = std.testing;
+    const Server = std.http.Server;
+    const Reader = std.Io.Reader;
+    const Writer = std.Io.Writer;
+
     const Filter = struct {
         name: ?[]const u8,
         age: ?[]const u8,
@@ -105,11 +96,20 @@ test "TypedQuery.init returns null when no query string is present" {
         .raw_req = &http_req,
     };
 
-    const result = try TypedQuery(Filter).init(test_ctx);
+    const filter = TypedQuery(Filter).fromContext(test_ctx);
+    const result = filter.result catch {
+        try testing.expect(false);
+        return;
+    };
     try testing.expectEqual(null, result);
 }
 
 test "TypedQuery.init maps fields from query parameters" {
+    const testing = std.testing;
+    const Server = std.http.Server;
+    const Reader = std.Io.Reader;
+    const Writer = std.Io.Writer;
+
     const Filter = struct {
         name: ?[]const u8,
         age: ?u8,
@@ -134,13 +134,22 @@ test "TypedQuery.init maps fields from query parameters" {
         .raw_req = &http_req,
     };
 
-    const typed = try TypedQuery(Filter).init(test_ctx);
-    try testing.expect(typed != null);
-    try testing.expectEqualStrings("alice", typed.?.name.?);
-    try testing.expectEqual(30, typed.?.age.?);
+    const typed = TypedQuery(Filter).fromContext(test_ctx);
+    const result = typed.result catch {
+        try testing.expect(false);
+        return;
+    };
+    try testing.expect(result != null);
+    try testing.expectEqualStrings("alice", result.?.name.?);
+    try testing.expectEqual(30, result.?.age.?);
 }
 
 test "TypedQuery.init returns pointer with null fields when query present but no matching fields" {
+    const testing = std.testing;
+    const Server = std.http.Server;
+    const Reader = std.Io.Reader;
+    const Writer = std.Io.Writer;
+
     const Filter = struct {
         a: ?[]const u8,
         b: ?[]const u8,
@@ -165,15 +174,24 @@ test "TypedQuery.init returns pointer with null fields when query present but no
         .raw_req = &http_req,
     };
 
-    const typed = try TypedQuery(Filter).init(test_ctx);
+    const typed = TypedQuery(Filter).fromContext(test_ctx);
+    const result = typed.result catch {
+        try testing.expect(false);
+        return;
+    };
     // When a query string exists but none of the struct fields are present,
     // the extractor returns a pointer to the struct with all fields set to null.
-    try testing.expect(typed != null);
-    try testing.expectEqual(null, typed.?.a);
-    try testing.expectEqual(null, typed.?.b);
+    try testing.expect(result != null);
+    try testing.expectEqual(null, result.?.a);
+    try testing.expectEqual(null, result.?.b);
 }
 
 test "TypedQuery.init field name matching is case-insensitive" {
+    const testing = std.testing;
+    const Server = std.http.Server;
+    const Reader = std.Io.Reader;
+    const Writer = std.Io.Writer;
+
     const Filter = struct {
         name: ?[]const u8,
     };
@@ -197,12 +215,21 @@ test "TypedQuery.init field name matching is case-insensitive" {
         .raw_req = &http_req,
     };
 
-    const typed = try TypedQuery(Filter).init(test_ctx);
-    try testing.expect(typed != null);
-    try testing.expectEqualStrings("Bob", typed.?.name.?);
+    const typed = TypedQuery(Filter).fromContext(test_ctx);
+    const result = typed.result catch {
+        try testing.expect(false);
+        return;
+    };
+    try testing.expect(result != null);
+    try testing.expectEqualStrings("Bob", result.?.name.?);
 }
 
 test "TypedQuery.init keeps matched empty values as null" {
+    const testing = std.testing;
+    const Server = std.http.Server;
+    const Reader = std.Io.Reader;
+    const Writer = std.Io.Writer;
+
     const Filter = struct {
         name: ?[]const u8,
     };
@@ -226,12 +253,21 @@ test "TypedQuery.init keeps matched empty values as null" {
         .raw_req = &http_req,
     };
 
-    const typed = try TypedQuery(Filter).init(test_ctx);
-    try testing.expect(typed != null);
-    try testing.expectEqual(null, typed.?.name);
+    const typed = TypedQuery(Filter).fromContext(test_ctx);
+    const result = typed.result catch {
+        try testing.expect(false);
+        return;
+    };
+    try testing.expect(result != null);
+    try testing.expectEqual(null, result.?.name);
 }
 
 test "TypedQuery.init returns source value when percent decoding is not needed" {
+    const testing = std.testing;
+    const Server = std.http.Server;
+    const Reader = std.Io.Reader;
+    const Writer = std.Io.Writer;
+
     const Filter = struct {
         name: ?[]const u8,
     };
@@ -255,11 +291,20 @@ test "TypedQuery.init returns source value when percent decoding is not needed" 
         .raw_req = &http_req,
     };
 
-    const typed = try TypedQuery(Filter).init(test_ctx);
-    try testing.expectEqualStrings("bad%2", typed.?.name.?);
+    const typed = TypedQuery(Filter).fromContext(test_ctx);
+    const result = typed.result catch {
+        try testing.expect(false);
+        return;
+    };
+    try testing.expectEqualStrings("bad%2", result.?.name.?);
 }
 
 test "TypedQuery.init uses last value for duplicate keys" {
+    const testing = std.testing;
+    const Server = std.http.Server;
+    const Reader = std.Io.Reader;
+    const Writer = std.Io.Writer;
+
     const Filter = struct {
         name: ?[]const u8,
     };
@@ -283,35 +328,11 @@ test "TypedQuery.init uses last value for duplicate keys" {
         .raw_req = &http_req,
     };
 
-    const typed = try TypedQuery(Filter).init(test_ctx);
-    try testing.expect(typed != null);
-    try testing.expectEqualStrings("bob", typed.?.name.?);
-}
-
-test "TypedQuery.Resolver.resolve populates result" {
-    const Filter = struct {
-        name: ?[]const u8,
+    const typed = TypedQuery(Filter).fromContext(test_ctx);
+    const result = typed.result catch {
+        try testing.expect(false);
+        return;
     };
-
-    const req_bytes = "GET /search?name=alice HTTP/1.1\r\n\r\n";
-    var stream_buf_reader = Reader.fixed(req_bytes);
-
-    var write_buffer: [4096]u8 = undefined;
-    var stream_buf_writer = Writer.fixed(&write_buffer);
-
-    var http_server = Server.init(&stream_buf_reader, &stream_buf_writer);
-    var http_req = try http_server.receiveHead();
-
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-
-    const test_ctx: Context = .{
-        .io = undefined,
-        .req_arena = arena.allocator(),
-        .raw_req = &http_req,
-    };
-    const resolved = Resolver.resolve(TypedQuery(Filter), test_ctx);
-    const value = try resolved.result;
-    try testing.expect(value != null);
-    try testing.expectEqualStrings("alice", value.?.name.?);
+    try testing.expect(result != null);
+    try testing.expectEqualStrings("bob", result.?.name.?);
 }

@@ -3,14 +3,13 @@ const Allocator = std.mem.Allocator;
 const AllocatorError = std.mem.Allocator.Error;
 const ReadAllocError = std.Io.Reader.ReadAllocError;
 const assert = std.debug.assert;
-const Context = @import("../Context.zig");
-const utils = @import("utils.zig");
+const Context = @import("core").Context;
+const url = @import("url.zig");
 const Request = std.http.Server.Request;
 
-const EXTRACTOR_ID: []const u8 = "VOLT_FORM_EXTRACTOR";
 const CONTENT_DISPOSITION: []const u8 = "Content-Disposition";
 
-const FormError = utils.ParseError || AllocatorError || ReadAllocError || error{
+const FormError = url.ParseError || AllocatorError || ReadAllocError || error{
     MissingContentType,
     MissingContentLength,
     EmptyBody,
@@ -54,7 +53,7 @@ fn extractMultipartFormData(
         const value = it.next() orelse return FormError.MalformedMultipartBody;
         inline for (type_info.@"struct".field_names, type_info.@"struct".field_types) |field_name, field_type| {
             if (std.mem.eql(u8, field_name, key)) {
-                @field(out, field_name) = try utils.parse(field_type, value);
+                @field(out, field_name) = try url.parse(field_type, value);
             }
         }
     }
@@ -76,12 +75,12 @@ fn extractUrlEncodedFormData(
         var kv_it = std.mem.splitScalar(u8, pair, '=');
         const key = kv_it.next() orelse return FormError.EmptyFormDataKey;
         const value = kv_it.next() orelse return FormError.EmptyFormDataValue;
-        const key_decoded = try utils.decodeUrl(arena, key);
-        const value_decoded = try utils.decodeUrl(arena, value);
+        const key_decoded = try url.decode(arena, key);
+        const value_decoded = try url.decode(arena, value);
 
         inline for (type_info.@"struct".field_names, type_info.@"struct".field_types) |field_name, field_type| {
             if (std.mem.eql(u8, field_name, key_decoded)) {
-                @field(out, field_name) = try utils.parse(field_type, value_decoded);
+                @field(out, field_name) = try url.parse(field_type, value_decoded);
             }
         }
     }
@@ -122,32 +121,22 @@ fn extract(comptime T: type, arena: Allocator, req: *Request) FormError!*T {
 
 pub fn Form(comptime T: type) type {
     return struct {
-        pub const ID: []const u8 = EXTRACTOR_ID;
-        pub const PAYLOAD_TYPE: type = T;
+        const Self = @This();
 
         result: FormError!*T,
 
-        pub fn init(ctx: Context) FormError!*T {
-            return extract(T, ctx.req_arena, ctx.raw_req);
+        pub fn fromContext(ctx: Context) Self {
+            return .{ .result = extract(T, ctx.req_arena, ctx.raw_req) };
         }
     };
 }
 
-pub const Resolver = struct {
-    pub const ID: []const u8 = EXTRACTOR_ID;
-
-    pub fn resolve(comptime Extractor: type, ctx: Context) Extractor {
-        comptime assert(@hasDecl(Extractor, "PAYLOAD_TYPE"));
-        return .{ .result = extract(@field(Extractor, "PAYLOAD_TYPE"), ctx.req_arena, ctx.raw_req) };
-    }
-};
-
-const testing = std.testing;
-const Reader = std.Io.Reader;
-const Writer = std.Io.Writer;
-const Server = std.http.Server;
-
 test "init returns Form with value when content type is multipart/form-data" {
+    const testing = std.testing;
+    const Reader = std.Io.Reader;
+    const Writer = std.Io.Writer;
+    const Server = std.http.Server;
+
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
 
@@ -192,7 +181,9 @@ test "init returns Form with value when content type is multipart/form-data" {
         age: u8,
     };
 
-    const person = Form(Person).init(test_ctx) catch {
+    const form = Form(Person).fromContext(test_ctx);
+
+    const person = form.result catch {
         try testing.expect(false);
         return;
     };
@@ -202,6 +193,11 @@ test "init returns Form with value when content type is multipart/form-data" {
 }
 
 test "init returns Form with value when content type is application/x-www-form-urlencoded" {
+    const testing = std.testing;
+    const Reader = std.Io.Reader;
+    const Writer = std.Io.Writer;
+    const Server = std.http.Server;
+
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
 
@@ -235,7 +231,8 @@ test "init returns Form with value when content type is application/x-www-form-u
         age: u8,
     };
 
-    const person = Form(Person).init(test_ctx) catch {
+    const form = Form(Person).fromContext(test_ctx);
+    const person = form.result catch {
         try testing.expect(false);
         return;
     };
@@ -245,6 +242,11 @@ test "init returns Form with value when content type is application/x-www-form-u
 }
 
 test "init returns error when content type is missing" {
+    const testing = std.testing;
+    const Reader = std.Io.Reader;
+    const Writer = std.Io.Writer;
+    const Server = std.http.Server;
+
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
 
@@ -277,12 +279,16 @@ test "init returns error when content type is missing" {
         age: u8,
     };
 
-    const person = Form(Person).init(test_ctx);
-
-    try testing.expectError(error.MissingContentType, person);
+    const form = Form(Person).fromContext(test_ctx);
+    try testing.expectError(error.MissingContentType, form.result);
 }
 
 test "init returns error when content length is missing" {
+    const testing = std.testing;
+    const Reader = std.Io.Reader;
+    const Writer = std.Io.Writer;
+    const Server = std.http.Server;
+
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
 
@@ -315,12 +321,16 @@ test "init returns error when content length is missing" {
         age: u8,
     };
 
-    const person = Form(Person).init(test_ctx);
-
-    try testing.expectError(error.MissingContentLength, person);
+    const form = Form(Person).fromContext(test_ctx);
+    try testing.expectError(error.MissingContentLength, form.result);
 }
 
 test "init returns error when body is empty" {
+    const testing = std.testing;
+    const Reader = std.Io.Reader;
+    const Writer = std.Io.Writer;
+    const Server = std.http.Server;
+
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
 
@@ -354,6 +364,6 @@ test "init returns error when body is empty" {
         age: u8,
     };
 
-    const person = Form(Person).init(test_ctx);
-    try testing.expectError(error.EmptyBody, person);
+    const form = Form(Person).fromContext(test_ctx);
+    try testing.expectError(error.EmptyBody, form.result);
 }

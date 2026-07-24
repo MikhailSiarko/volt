@@ -6,8 +6,7 @@ const WebSocket = std.http.Server.WebSocket;
 const WriterError = std.Io.Writer.Error;
 const ExpectedContinueError = std.http.Server.Request.ExpectContinueError;
 
-const Context = @import("../Context.zig");
-const utils = @import("utils.zig");
+const Context = @import("core").Context;
 
 pub const WebSocketUpgradeError = error{
     WebSocketKeyMissing,
@@ -20,8 +19,8 @@ const Self = @This();
 
 result: WebSocketError!WebSocket,
 
-pub fn init(ctx: Context) !WebSocket {
-    return try extract(ctx.raw_req);
+pub fn fromContext(ctx: Context) Self {
+    return .{ .result = extract(ctx.raw_req) };
 }
 
 pub fn onConnected(self: *const Self, handler: anytype, args: anytype) !void {
@@ -80,12 +79,12 @@ fn getParamsTypes(comptime params_len: usize, comptime param_types: []const type
     return &params;
 }
 
-const testing = std.testing;
-const Reader = std.Io.Reader;
-const Writer = std.Io.Writer;
-const Server = std.http.Server;
-
 test "init returns NotWebSocketUpgrade for regular HTTP request" {
+    const testing = std.testing;
+    const Reader = std.Io.Reader;
+    const Writer = std.Io.Writer;
+    const Server = std.http.Server;
+
     const req_bytes = std.fmt.comptimePrint("GET /ws HTTP/1.1\r\n" ++ "\r\n", .{});
     var stream_buf_reader = Reader.fixed(req_bytes);
 
@@ -100,11 +99,13 @@ test "init returns NotWebSocketUpgrade for regular HTTP request" {
         .req_arena = testing.allocator,
         .raw_req = &http_req,
     };
-    const ws_result = Self.init(test_ctx);
-    try testing.expectEqual(WebSocketError.NotWebSocketUpgrade, ws_result);
+    const ws_result = Self.fromContext(test_ctx);
+    try testing.expectEqual(WebSocketError.NotWebSocketUpgrade, ws_result.result);
 }
 
 test "onConnected returns stored extractor error" {
+    const testing = std.testing;
+
     const ws: Self = .{ .result = WebSocketError.NotWebSocketUpgrade };
     const handler = struct {
         fn f(_: *std.http.Server.WebSocket) !void {}
