@@ -206,6 +206,25 @@ pub fn Router(comptime State: type) type {
             }
         }
 
+        pub fn dispatch(self: *const Self, io: std.Io, allocator: Allocator, req: *HttpRequest) !Response {
+            var ctx: Context = .init(
+                io,
+                allocator,
+                req,
+            );
+            const target = normalizedTarget(ctx.raw_req.head.target);
+            const method = ctx.raw_req.head.method;
+            var allowed_methods = std.EnumSet(std.http.Method).empty;
+
+            if (self.findHandler(&ctx, target, method, &allowed_methods)) |handler| {
+                return handler.execute(ctx, self.state);
+            }
+            if (allowed_methods.count() > 0) {
+                return .text(allocator, .method_not_allowed, "Method Not Allowed", null);
+            }
+            return .text(allocator, .not_found, "404 Not Found", null);
+        }
+
         fn handleRequest(self: *const Self, io: std.Io, allocator: Allocator, req: *HttpRequest) !void {
             var arena = std.heap.ArenaAllocator.init(allocator);
             defer arena.deinit();

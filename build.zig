@@ -5,8 +5,13 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
 
     const extract_enabled = b.option(bool, "extract_enabled", "Enable built-in extractors") orelse false;
+    const testing_enabled = b.option(bool, "testing_enabled", "Enable built-in testing tools") orelse false;
+
     const options = b.addOptions();
     options.addOption(bool, "extract_enabled", extract_enabled);
+    options.addOption(bool, "testing_enabled", testing_enabled);
+
+    const options_mod = options.createModule();
 
     const core = b.addModule("core", .{
         .root_source_file = b.path("src/core/root.zig"),
@@ -48,15 +53,12 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/root.zig"),
         .target = target,
         .optimize = optimize,
-        .imports = if (extract_enabled) &.{
-            .{ .name = "options", .module = options.createModule() },
-            .{ .name = "core", .module = core },
-            .{ .name = "extract", .module = extract.? },
-        } else &.{
-            .{ .name = "options", .module = options.createModule() },
-            .{ .name = "core", .module = core },
-        },
     });
+    mod.addImport("options", options_mod);
+    mod.addImport("core", core);
+    if (extract) |extract_mod| {
+        mod.addImport("extract", extract_mod);
+    }
 
     const mod_tests = b.addTest(.{
         .root_module = mod,

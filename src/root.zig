@@ -107,6 +107,8 @@ pub const Response = @import("core").Response;
 /// ```
 pub const Router = @import("router.zig").Router;
 
+const options = @import("options");
+
 /// Extractors for request parameters, headers, and body content.
 ///
 /// Example usage:
@@ -119,14 +121,24 @@ pub const Router = @import("router.zig").Router;
 ///     return Response.ok(ctx.req_arena, null, null);
 /// }
 /// ```
-pub const extract = if (@import("options").extract_enabled)
+pub const extract = if (options.extract_enabled)
     @import("extract")
 else
     @compileError("Built-in extractors are not enabled: set 'extract_enabled' option to 'true' in volt's dependency import");
+
+pub const testing = if (options.testing_enabled)
+    if (!@import("builtin").is_test) {
+        @compileError("Testing features work only in 'test' blocks");
+    } else @import("testing/client.zig")
+else
+    @compileError("Testing features are not enabled: set 'testing_enabled' option to 'true' in volt's dependency import");
 
 test {
     const refAllDecls = @import("std").testing.refAllDecls;
     _ = refAllDecls(Server);
     _ = refAllDecls(@import("router.zig"));
     _ = refAllDecls(@import("extractor.zig"));
+    if (options.testing_enabled) {
+        _ = refAllDecls(@import("testing/client.zig"));
+    }
 }
