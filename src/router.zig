@@ -8,6 +8,11 @@ const Response = core.Response;
 const ArgsTuple = std.meta.ArgsTuple;
 const log = std.log;
 const extractor = @import("extractor.zig");
+const volt_options = @import("options");
+
+const middleware_mod = if (volt_options.middleware_enabled) @import("middleware/root.zig") else struct {};
+const Middleware = if (volt_options.middleware_enabled) middleware_mod.Middleware else void;
+const Next = if (volt_options.middleware_enabled) middleware_mod.Next else void;
 
 pub fn Router(comptime State: type) type {
     return struct {
@@ -16,6 +21,7 @@ pub fn Router(comptime State: type) type {
         state: State,
         routes: std.StringHashMap(Route),
         parametric_routes: std.ArrayList(ParametricRoute),
+        middlewares: if (volt_options.middleware_enabled) std.ArrayListUnmanaged(Middleware) else void,
 
         const VTable = struct {
             execute: *const fn (*const anyopaque, Context, State) anyerror!Response,
@@ -109,6 +115,7 @@ pub fn Router(comptime State: type) type {
                 .state = state,
                 .routes = .init(allocator),
                 .parametric_routes = .empty,
+                .middlewares = if (volt_options.middleware_enabled) .empty else {},
             };
         }
 
@@ -117,6 +124,9 @@ pub fn Router(comptime State: type) type {
         /// This method should be called when the router is no longer needed
         /// to free all allocated route handlers and mappings.
         pub fn deinit(self: *Self, allocator: Allocator) void {
+            if (comptime volt_options.middleware_enabled) {
+                self.middlewares.deinit(allocator);
+            }
             var it = self.routes.iterator();
             while (it.next()) |entry| {
                 entry.value_ptr.handlers.deinit();
@@ -130,6 +140,19 @@ pub fn Router(comptime State: type) type {
                 allocator.free(p_route.pattern);
             }
             self.parametric_routes.deinit(allocator);
+        }
+
+        /// Registers a middleware into the router pipeline chain.
+        ///
+        /// Parameters:
+        /// - `allocator`: Memory allocator for storing middleware handles
+        /// - `mw`: Middleware function `fn(*Context, *Next) !Response` or struct pointer with an `exec` method
+        pub fn use(self: *Self, allocator: Allocator, mw: anytype) !void {
+            if (comptime !volt_options.middleware_enabled) {
+                @compileError("router.use requires 'middleware_enabled' option to be true");
+            }
+            const item = middleware_mod.makeMiddleware(mw);
+            try self.middlewares.append(allocator, item);
         }
 
         /// Registers a GET route handler.
@@ -257,6 +280,51 @@ pub fn Router(comptime State: type) type {
             }
         }
 
+        const Runner = struct {
+            index: usize = 0,
+            middlewares: []const Middleware,
+            target_handler: Handler,
+            state: State,
+
+            pub fn nextInterface(self: *Runner) Next {
+                const impl = struct {
+                    fn exec(ptr: *const anyopaque, ctx: *Context) anyerror!Response {
+                        const self_ptr: *Runner = @constCast(@ptrCast(@alignCast(ptr)));
+                        return self_ptr.step(ctx);
+                    }
+                };
+                return .{
+                    .ptr = self,
+                    .vtable = &.{ .exec = impl.exec },
+                };
+            }
+
+            pub fn step(self: *Runner, ctx: *Context) anyerror!Response {
+                if (self.index < self.middlewares.len) {
+                    const mw = self.middlewares[self.index];
+                    self.index += 1;
+                    var nxt = self.nextInterface();
+                    return mw.execute(ctx, &nxt);
+                }
+                return self.target_handler.execute(ctx.*, self.state);
+            }
+        };
+
+        fn executePipeline(self: *const Self, handler: Handler, ctx: *Context) !Response {
+            if (comptime volt_options.middleware_enabled) {
+                if (self.middlewares.items.len > 0) {
+                    var runner: Runner = .{
+                        .middlewares = self.middlewares.items,
+                        .target_handler = handler,
+                        .state = self.state,
+                    };
+                    var nxt = runner.nextInterface();
+                    return nxt.exec(ctx);
+                }
+            }
+            return handler.execute(ctx.*, self.state);
+        }
+
         pub fn dispatch(self: *const Self, io: std.Io, allocator: Allocator, req: *HttpRequest) !Response {
             var ctx: Context = .init(
                 io,
@@ -268,7 +336,7 @@ pub fn Router(comptime State: type) type {
             var allowed_methods = std.EnumSet(std.http.Method).empty;
 
             if (self.findHandler(&ctx, target, method, &allowed_methods)) |handler| {
-                return handler.execute(ctx, self.state);
+                return self.executePipeline(handler, &ctx);
             }
             if (allowed_methods.count() > 0) {
                 return .text(allocator, .method_not_allowed, "Method Not Allowed", null);
@@ -291,7 +359,7 @@ pub fn Router(comptime State: type) type {
             var allowed_methods = std.EnumSet(std.http.Method).empty;
 
             if (self.findHandler(&ctx, target, method, &allowed_methods)) |handler| {
-                return executeHandler(handler, ctx, self.state);
+                return self.executeHandler(handler, &ctx);
             }
 
             if (allowed_methods.count() > 0) {
@@ -357,8 +425,8 @@ pub fn Router(comptime State: type) type {
             return null;
         }
 
-        fn executeHandler(handler: Router(State).Handler, ctx: Context, state: State) !void {
-            const res = handler.execute(ctx, state) catch |err| {
+        fn executeHandler(self: *const Self, handler: Router(State).Handler, ctx: *Context) !void {
+            const res = self.executePipeline(handler, ctx) catch |err| {
                 try ctx.raw_req.respond(@errorName(err), .{ .status = .internal_server_error });
                 return;
             };
@@ -792,4 +860,93 @@ test "router duplicates route path keys on registration" {
 
     const output = write_buffer[0..stream_buf_writer.end];
     try std.testing.expect(std.mem.find(u8, output, "owned") != null);
+}
+
+test "middleware executes in order and modifies response header" {
+    if (comptime !volt_options.middleware_enabled) return;
+
+    var router: Router(void) = .init(std.testing.allocator, {});
+    defer router.deinit(std.testing.allocator);
+
+    const mw = struct {
+        fn addHeader(ctx: *Context, next: *Next) !Response {
+            var res = try next.exec(ctx);
+            try res.setHeader(ctx.req_arena, "X-Custom-Middleware", "Active");
+            return res;
+        }
+
+        fn handler(ctx: Context) !Response {
+            return Response.text(ctx.req_arena, .ok, "hello middleware", null);
+        }
+    };
+
+    try router.use(std.testing.allocator, mw.addHeader);
+    try router.get(std.testing.allocator, "/test", mw.handler);
+
+    const req_bytes = "GET /test HTTP/1.1\r\n\r\n";
+    var stream_buf_reader = std.Io.Reader.fixed(req_bytes);
+    var write_buffer: [4096]u8 = undefined;
+    var stream_buf_writer = std.Io.Writer.fixed(&write_buffer);
+    var http_server = std.http.Server.init(&stream_buf_reader, &stream_buf_writer);
+    var req = try http_server.receiveHead();
+
+    try router.handleRequest(std.testing.io, std.testing.allocator, &req);
+
+    const output = write_buffer[0..stream_buf_writer.end];
+    try std.testing.expect(std.mem.find(u8, output, "X-Custom-Middleware: Active") != null);
+    try std.testing.expect(std.mem.find(u8, output, "hello middleware") != null);
+}
+
+test "built-in requestId and cors middlewares" {
+    if (comptime !volt_options.middleware_enabled) return;
+
+    var router: Router(void) = .init(std.testing.allocator, {});
+    defer router.deinit(std.testing.allocator);
+
+    try router.use(std.testing.allocator, middleware_mod.requestId);
+    try router.use(std.testing.allocator, middleware_mod.cors);
+    try router.get(std.testing.allocator, "/ping", struct {
+        fn ping(ctx: Context) !Response {
+            return Response.text(ctx.req_arena, .ok, "pong", null);
+        }
+    }.ping);
+
+    const req_bytes = "GET /ping HTTP/1.1\r\nOrigin: https://example.com\r\n\r\n";
+    var stream_buf_reader = std.Io.Reader.fixed(req_bytes);
+    var write_buffer: [4096]u8 = undefined;
+    var stream_buf_writer = std.Io.Writer.fixed(&write_buffer);
+    var http_server = std.http.Server.init(&stream_buf_reader, &stream_buf_writer);
+    var req = try http_server.receiveHead();
+
+    try router.handleRequest(std.testing.io, std.testing.allocator, &req);
+
+    const output = write_buffer[0..stream_buf_writer.end];
+    try std.testing.expect(std.mem.find(u8, output, "X-Request-ID: req-") != null);
+    try std.testing.expect(std.mem.find(u8, output, "Access-Control-Allow-Origin: *") != null);
+}
+
+test "recovery middleware intercepts error and returns 500" {
+    if (comptime !volt_options.middleware_enabled) return;
+
+    var router: Router(void) = .init(std.testing.allocator, {});
+    defer router.deinit(std.testing.allocator);
+
+    try router.use(std.testing.allocator, middleware_mod.recovery);
+    try router.get(std.testing.allocator, "/faulty", struct {
+        fn faulty(_: Context) !Response {
+            return error.DatabaseConnectionFailed;
+        }
+    }.faulty);
+
+    const req_bytes = "GET /faulty HTTP/1.1\r\n\r\n";
+    var stream_buf_reader = std.Io.Reader.fixed(req_bytes);
+    var write_buffer: [4096]u8 = undefined;
+    var stream_buf_writer = std.Io.Writer.fixed(&write_buffer);
+    var http_server = std.http.Server.init(&stream_buf_reader, &stream_buf_writer);
+    var req = try http_server.receiveHead();
+
+    try router.handleRequest(std.testing.io, std.testing.allocator, &req);
+
+    const output = write_buffer[0..stream_buf_writer.end];
+    try std.testing.expect(std.mem.find(u8, output, "500 Internal Server Error") != null);
 }

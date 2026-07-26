@@ -144,6 +144,21 @@ pub fn html(
     return intoHttpResponse(arena, status, content, "text/html", headers);
 }
 
+/// Sets or appends an HTTP header on the response.
+pub fn setHeader(self: *Self, arena: Allocator, name: []const u8, value: []const u8) !void {
+    if (self.attributes) |*attr| {
+        const new_header = HttpHeader{ .name = name, .value = value };
+        const new_headers = try std.mem.concat(arena, HttpHeader, &.{ attr.headers, &[_]HttpHeader{new_header} });
+        attr.headers = new_headers;
+    } else {
+        self.attributes = .{
+            .status = .ok,
+            .content = &.{},
+            .headers = try arena.dupe(HttpHeader, &[_]HttpHeader{.{ .name = name, .value = value }}),
+        };
+    }
+}
+
 pub const empty: Self = .{ .attributes = null };
 
 pub fn send(self: Self, req: *HttpRequest) !void {

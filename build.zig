@@ -6,10 +6,12 @@ pub fn build(b: *std.Build) void {
 
     const extract_enabled = b.option(bool, "extract_enabled", "Enable built-in extractors") orelse false;
     const testing_enabled = b.option(bool, "testing_enabled", "Enable built-in testing tools") orelse false;
+    const middleware_enabled = b.option(bool, "middleware_enabled", "Enable built-in middleware system") orelse false;
 
     const options = b.addOptions();
     options.addOption(bool, "extract_enabled", extract_enabled);
     options.addOption(bool, "testing_enabled", testing_enabled);
+    options.addOption(bool, "middleware_enabled", middleware_enabled);
 
     const options_mod = options.createModule();
 

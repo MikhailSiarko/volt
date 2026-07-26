@@ -26,6 +26,9 @@ raw_req: *Request,
 /// The route pattern that matched this request, if any. This is used by some extractors like RouteParam.
 route_pattern: ?[]const u8 = null,
 
+/// Unique request ID set by request_id middleware if enabled.
+request_id: ?[]const u8 = null,
+
 /// Convenience initializer for constructing request context values.
 ///
 /// This keeps context construction explicit and stable for tests or

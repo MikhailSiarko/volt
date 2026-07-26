@@ -133,12 +133,22 @@ pub const testing = if (options.testing_enabled)
 else
     @compileError("Testing features are not enabled: set 'testing_enabled' option to 'true' in volt's dependency import");
 
+pub const middleware = if (options.middleware_enabled)
+    @import("middleware/root.zig")
+else
+    @compileError("Built-in middleware features are not enabled: set 'middleware_enabled' option to 'true' in volt's dependency import");
+
 test {
     const refAllDecls = @import("std").testing.refAllDecls;
     _ = refAllDecls(Server);
     _ = refAllDecls(@import("router.zig"));
-    _ = refAllDecls(@import("extractor.zig"));
+    if (options.extract_enabled) {
+        _ = refAllDecls(@import("extractor.zig"));
+    }
     if (options.testing_enabled) {
         _ = refAllDecls(@import("testing/client.zig"));
+    }
+    if (options.middleware_enabled) {
+        _ = refAllDecls(@import("middleware/root.zig"));
     }
 }
