@@ -4,6 +4,7 @@ const Router = @import("router.zig").Router;
 const IpAddress = std.Io.net.IpAddress;
 const ListenOptions = std.Io.net.IpAddress.ListenOptions;
 const log = std.log;
+const builtin = @import("builtin");
 
 /// Configuration options for the HTTP server, such as timeouts and limits.
 pub const ServerOptions = struct {
@@ -91,7 +92,11 @@ fn acceptConnections(
             else => return err,
         };
 
-        try tasks.concurrent(self.io, Router(State).handle, .{ router, self.io, allocator, conn });
+        if (builtin.single_threaded) {
+            tasks.async(self.io, Router(State).handle, .{ router, self.io, allocator, conn });
+        } else {
+            try tasks.concurrent(self.io, Router(State).handle, .{ router, self.io, allocator, conn });
+        }
     }
 }
 
