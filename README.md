@@ -66,10 +66,15 @@ Volt provides a clean routing API with support for all HTTP methods:
 
 ```zig
 try router.get(allocator, "/users", &getUsers);
+try router.head(allocator, "/users", &headUsers);
 try router.post(allocator, "/users", &createUser);
 try router.put(allocator, "/users", &updateUser);
 try router.delete(allocator, "/users", &deleteUser);
 try router.patch(allocator, "/users", &patchUser);
+try router.options(allocator, "/users", &optionsUsers);
+try router.connect(allocator, "/users", &connectUsers);
+try router.trace(allocator, "/users", &traceUsers);
+try router.route(allocator, .GET, "/custom", &getUsers);
 ```
 
 ### Route Matching Rules
@@ -105,6 +110,82 @@ All extractors can be used in two ways:
 - **extract.RouteParam("name")**: Extracts a named path segment from parametric routes (e.g., `/users/:id`) as `value: ?[]const u8`.
 - **extract.Form(T)**: Form extractor exposing `result: FormError!T`.
 - **extract.WebSocket**: Handles WebSocket upgrade requests and connection handoff via `result: WebSocketError!std.http.Server.WebSocket`.
+
+### Custom Extractors
+
+You can easily define custom extractors for your application. Any `struct` or `union` type `T` acts as a custom extractor in Volt if it follows the extractor convention:
+
+```zig
+pub fn fromContext(ctx: volt.Context) T
+```
+
+Specifically, the `fromContext` method must take a single `volt.Context` argument and return the extractor type `T` itself (i.e. `@This()`).
+
+When Volt resolves route handler parameters at compile time, if a parameter type defines `pub fn fromContext(ctx: volt.Context) T`, Volt automatically recognizes it as an extractor and calls `fromContext(ctx)` at request time, injecting the returned instance directly into the handler parameter.
+
+#### Example: Custom Bearer Token Extractor
+
+```zig
+pub const BearerToken = struct {
+    token: ?[]const u8,
+
+    pub fn fromContext(ctx: volt.Context) BearerToken {
+        if (ctx.raw_req.head.headers.get("Authorization")) |auth| {
+            if (std.mem.startsWith(u8, auth, "Bearer ")) {
+                return .{ .token = auth[7..] };
+            }
+        }
+        return .{ .token = null };
+    }
+};
+
+// Automatic parameter injection in route handler:
+fn protectedProfile(
+    ctx: volt.Context,
+    auth: BearerToken,
+) !volt.Response {
+    const token = auth.token orelse {
+        return volt.Response.text(ctx.req_arena, .unauthorized, "Missing Bearer token", null);
+    };
+
+    return volt.Response.text(ctx.req_arena, .ok, token, null);
+}
+```
+
+#### Example: Custom Extractor with Error Handling
+
+If extraction can fail, wrap the inner payload in an error union field (e.g., `result`) inside the extractor struct:
+
+```zig
+pub const UserSession = struct {
+    const SessionError = error{ InvalidHeader, ExpiredToken };
+
+    result: SessionError![]const u8,
+
+    pub fn fromContext(ctx: volt.Context) UserSession {
+        const header = ctx.raw_req.head.headers.get("X-Session-ID") orelse {
+            return .{ .result = error.InvalidHeader };
+        };
+
+        if (std.mem.eql(u8, header, "expired")) {
+            return .{ .result = error.ExpiredToken };
+        }
+
+        return .{ .result = header };
+    }
+};
+
+fn userDashboard(
+    ctx: volt.Context,
+    session: UserSession,
+) !volt.Response {
+    const session_id = session.result catch |err| {
+        return volt.Response.text(ctx.req_arena, .unauthorized, @errorName(err), null);
+    };
+
+    return volt.Response.text(ctx.req_arena, .ok, session_id, null);
+}
+```
 
 ### Manual Extraction With init(ctx)
 

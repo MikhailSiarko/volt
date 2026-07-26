@@ -124,10 +124,10 @@ pub fn Router(comptime State: type) type {
             }
             self.routes.deinit();
 
-            for (self.parametric_routes.items) |*route| {
-                route.entry.handlers.deinit();
-                allocator.free(route.segments);
-                allocator.free(route.pattern);
+            for (self.parametric_routes.items) |*p_route| {
+                p_route.entry.handlers.deinit();
+                allocator.free(p_route.segments);
+                allocator.free(p_route.pattern);
             }
             self.parametric_routes.deinit(allocator);
         }
@@ -140,6 +140,16 @@ pub fn Router(comptime State: type) type {
         /// - `handler`: Function that handles GET requests to this path
         pub fn get(self: *Self, allocator: Allocator, path: []const u8, handler: anytype) !void {
             try self.addRoute(allocator, .GET, path, makeHandler(handler));
+        }
+
+        /// Registers a HEAD route handler.
+        ///
+        /// Parameters:
+        /// - `allocator`: Memory allocator used for route storage
+        /// - `path`: Route path
+        /// - `handler`: Function that handles HEAD requests to this path
+        pub fn head(self: *Self, allocator: Allocator, path: []const u8, handler: anytype) !void {
+            try self.addRoute(allocator, .HEAD, path, makeHandler(handler));
         }
 
         /// Registers a POST route handler.
@@ -172,6 +182,36 @@ pub fn Router(comptime State: type) type {
             try self.addRoute(allocator, .DELETE, path, makeHandler(handler));
         }
 
+        /// Registers a CONNECT route handler.
+        ///
+        /// Parameters:
+        /// - `allocator`: Memory allocator used for route storage
+        /// - `path`: Route path
+        /// - `handler`: Function that handles CONNECT requests to this path
+        pub fn connect(self: *Self, allocator: Allocator, path: []const u8, handler: anytype) !void {
+            try self.addRoute(allocator, .CONNECT, path, makeHandler(handler));
+        }
+
+        /// Registers an OPTIONS route handler.
+        ///
+        /// Parameters:
+        /// - `allocator`: Memory allocator used for route storage
+        /// - `path`: Route path
+        /// - `handler`: Function that handles OPTIONS requests to this path
+        pub fn options(self: *Self, allocator: Allocator, path: []const u8, handler: anytype) !void {
+            try self.addRoute(allocator, .OPTIONS, path, makeHandler(handler));
+        }
+
+        /// Registers a TRACE route handler.
+        ///
+        /// Parameters:
+        /// - `allocator`: Memory allocator used for route storage
+        /// - `path`: Route path
+        /// - `handler`: Function that handles TRACE requests to this path
+        pub fn trace(self: *Self, allocator: Allocator, path: []const u8, handler: anytype) !void {
+            try self.addRoute(allocator, .TRACE, path, makeHandler(handler));
+        }
+
         /// Registers a PATCH route handler.
         ///
         /// Parameters:
@@ -180,6 +220,17 @@ pub fn Router(comptime State: type) type {
         /// - `handler`: Function that handles PATCH requests to this path
         pub fn patch(self: *Self, allocator: Allocator, path: []const u8, handler: anytype) !void {
             try self.addRoute(allocator, .PATCH, path, makeHandler(handler));
+        }
+
+        /// Registers a route handler for a specified HTTP method.
+        ///
+        /// Parameters:
+        /// - `allocator`: Memory allocator used for route storage
+        /// - `method`: HTTP method enum value (e.g. .GET, .POST, .OPTIONS, etc.)
+        /// - `path`: Route path
+        /// - `handler`: Function that handles requests for this method and path
+        pub fn route(self: *Self, allocator: Allocator, method: std.http.Method, path: []const u8, handler: anytype) !void {
+            try self.addRoute(allocator, method, path, makeHandler(handler));
         }
 
         pub fn handle(self: *const Self, io: std.Io, allocator: Allocator, conn: std.Io.net.Stream) void {
@@ -292,14 +343,14 @@ pub fn Router(comptime State: type) type {
             method: std.http.Method,
             allowed_methods: *std.EnumSet(std.http.Method),
         ) ?Handler {
-            for (self.parametric_routes.items) |*route| {
-                if (route.match(target)) {
-                    if (route.entry.handlers.get(method)) |handler| {
-                        ctx.route_pattern = route.pattern;
+            for (self.parametric_routes.items) |*p_route| {
+                if (p_route.match(target)) {
+                    if (p_route.entry.handlers.get(method)) |handler| {
+                        ctx.route_pattern = p_route.pattern;
                         return handler;
                     }
 
-                    collectAllowedMethods(allowed_methods, route.entry.handlers);
+                    collectAllowedMethods(allowed_methods, p_route.entry.handlers);
                 }
             }
 
@@ -368,9 +419,9 @@ pub fn Router(comptime State: type) type {
 
         fn addRoute(self: *Self, allocator: Allocator, method: std.http.Method, path: []const u8, handler: Handler) !void {
             if (isParametricPath(path)) {
-                for (self.parametric_routes.items) |*route| {
-                    if (std.mem.eql(u8, route.pattern, path)) {
-                        try route.entry.handlers.put(method, handler);
+                for (self.parametric_routes.items) |*p_route| {
+                    if (std.mem.eql(u8, p_route.pattern, path)) {
+                        try p_route.entry.handlers.put(method, handler);
                         return;
                     }
                 }
@@ -401,8 +452,8 @@ pub fn Router(comptime State: type) type {
                     .entry = entry,
                 });
             } else {
-                if (self.routes.getPtr(path)) |route| {
-                    try route.handlers.put(method, handler);
+                if (self.routes.getPtr(path)) |route_entry| {
+                    try route_entry.handlers.put(method, handler);
                 } else {
                     const owned_path = try allocator.dupe(u8, path);
                     errdefer allocator.free(owned_path);

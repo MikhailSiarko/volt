@@ -18,7 +18,7 @@ pub fn Client(comptime State: type) type {
             };
         }
 
-        fn request(
+        pub fn request(
             self: *Self,
             method: std.http.Method,
             path: []const u8,
@@ -68,6 +68,14 @@ pub fn Client(comptime State: type) type {
             return self.request(.GET, path, null, headers);
         }
 
+        pub fn head(
+            self: *Self,
+            path: []const u8,
+            headers: ?[]const std.http.Header,
+        ) !Response {
+            return self.request(.HEAD, path, null, headers);
+        }
+
         pub fn post(
             self: *Self,
             path: []const u8,
@@ -101,6 +109,30 @@ pub fn Client(comptime State: type) type {
             headers: ?[]const std.http.Header,
         ) !Response {
             return self.request(.DELETE, path, null, headers);
+        }
+
+        pub fn connect(
+            self: *Self,
+            path: []const u8,
+            headers: ?[]const std.http.Header,
+        ) !Response {
+            return self.request(.CONNECT, path, null, headers);
+        }
+
+        pub fn options(
+            self: *Self,
+            path: []const u8,
+            headers: ?[]const std.http.Header,
+        ) !Response {
+            return self.request(.OPTIONS, path, null, headers);
+        }
+
+        pub fn trace(
+            self: *Self,
+            path: []const u8,
+            headers: ?[]const std.http.Header,
+        ) !Response {
+            return self.request(.TRACE, path, null, headers);
         }
     };
 }
