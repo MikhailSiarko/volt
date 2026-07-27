@@ -10,9 +10,9 @@ const log = std.log;
 const extractor = @import("extractor.zig");
 const volt_options = @import("options");
 
-const middleware_mod = if (volt_options.middleware_enabled) @import("middleware/root.zig") else struct {};
-const Middleware = if (volt_options.middleware_enabled) middleware_mod.Middleware else void;
-const Next = if (volt_options.middleware_enabled) middleware_mod.Next else void;
+const middleware = if (volt_options.middleware_enabled) @import("middleware/root.zig") else void;
+const Middleware = if (volt_options.middleware_enabled) middleware.Middleware else void;
+const Next = if (volt_options.middleware_enabled) middleware.Next else void;
 
 pub fn Router(comptime State: type) type {
     return struct {
@@ -115,7 +115,7 @@ pub fn Router(comptime State: type) type {
                 .state = state,
                 .routes = .init(allocator),
                 .parametric_routes = .empty,
-                .middlewares = if (volt_options.middleware_enabled) .empty else {},
+                .middlewares = if (comptime volt_options.middleware_enabled) .empty else {},
             };
         }
 
@@ -151,7 +151,7 @@ pub fn Router(comptime State: type) type {
             if (comptime !volt_options.middleware_enabled) {
                 @compileError("router.use requires 'middleware_enabled' option to be true");
             }
-            const item = middleware_mod.makeMiddleware(mw);
+            const item = middleware.makeMiddleware(mw);
             try self.middlewares.append(allocator, item);
         }
 
@@ -289,7 +289,7 @@ pub fn Router(comptime State: type) type {
             pub fn nextInterface(self: *Runner) Next {
                 const impl = struct {
                     fn exec(ptr: *const anyopaque, ctx: *Context) anyerror!Response {
-                        const self_ptr: *Runner = @constCast(@ptrCast(@alignCast(ptr)));
+                        const self_ptr: *Runner = @ptrCast(@alignCast(@constCast(ptr)));
                         return self_ptr.step(ctx);
                     }
                 };
@@ -903,8 +903,8 @@ test "built-in requestId and cors middlewares" {
     var router: Router(void) = .init(std.testing.allocator, {});
     defer router.deinit(std.testing.allocator);
 
-    try router.use(std.testing.allocator, middleware_mod.requestId);
-    try router.use(std.testing.allocator, middleware_mod.cors);
+    try router.use(std.testing.allocator, middleware.requestId);
+    try router.use(std.testing.allocator, middleware.cors);
     try router.get(std.testing.allocator, "/ping", struct {
         fn ping(ctx: Context) !Response {
             return Response.text(ctx.req_arena, .ok, "pong", null);
@@ -931,7 +931,7 @@ test "recovery middleware intercepts error and returns 500" {
     var router: Router(void) = .init(std.testing.allocator, {});
     defer router.deinit(std.testing.allocator);
 
-    try router.use(std.testing.allocator, middleware_mod.recovery);
+    try router.use(std.testing.allocator, middleware.recovery);
     try router.get(std.testing.allocator, "/faulty", struct {
         fn faulty(_: Context) !Response {
             return error.DatabaseConnectionFailed;
