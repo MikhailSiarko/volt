@@ -74,7 +74,7 @@ pub const Cors = struct {
                 try res.setHeader(ctx.req_arena, "Access-Control-Allow-Headers", headers_str);
             }
             if (self.config.max_age_seconds) |max_age| {
-                const max_age_buf = try std.fmt.allocPrint(ctx.req_arena, "{d}", .{max_age});
+                const max_age_buf = try ctx.req_arena.print("{d}", .{max_age});
                 try res.setHeader(ctx.req_arena, "Access-Control-Max-Age", max_age_buf);
             }
         }

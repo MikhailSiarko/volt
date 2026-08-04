@@ -11,7 +11,7 @@ var request_counter: std.atomic.Value(u64) = std.atomic.Value(u64).init(1);
 /// and sets the `X-Request-ID` HTTP header on the response.
 pub fn requestId(ctx: *Context, next: *Next) anyerror!Response {
     const count = request_counter.fetchAdd(1, .monotonic);
-    const req_id = try std.fmt.allocPrint(ctx.req_arena, "req-{d}", .{count});
+    const req_id = try ctx.req_arena.print("req-{d}", .{count});
 
     ctx.request_id = req_id;
 

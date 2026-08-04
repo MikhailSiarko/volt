@@ -108,7 +108,7 @@ fn extract(comptime T: type, arena: Allocator, req: *Request) FormError!*T {
             return FormError.MissingBoundary;
 
         const boundary = std.mem.trim(u8, content_type[boundary_pos + boundary_prefix.len ..], "\r\n");
-        const delimeter = try std.fmt.allocPrint(arena, "--{s}", .{boundary});
+        const delimeter = try arena.print("--{s}", .{boundary});
         defer arena.free(delimeter);
 
         return extractMultipartFormData(T, arena, delimeter, content);
@@ -161,7 +161,7 @@ test "init returns Form with value when content type is multipart/form-data" {
         "30\r\n" ++
         "----------------------------727622845833790348454509--\r\n";
 
-    const form_data = try std.fmt.allocPrint(testing_arena, req_bytes, .{ form_content.len, form_content });
+    const form_data = try testing_arena.print(req_bytes, .{ form_content.len, form_content });
     var stream_buf_reader = Reader.fixed(form_data);
 
     var write_buffer: [4096]u8 = undefined;
@@ -211,7 +211,7 @@ test "init returns Form with value when content type is application/x-www-form-u
 
     const form_content = "name=Name%20White&age=30";
 
-    const form_data = try std.fmt.allocPrint(testing_arena, req_bytes, .{ form_content.len, form_content });
+    const form_data = try testing_arena.print(req_bytes, .{ form_content.len, form_content });
     var stream_buf_reader = Reader.fixed(form_data);
 
     var write_buffer: [4096]u8 = undefined;
@@ -259,7 +259,7 @@ test "init returns error when content type is missing" {
 
     const form_content = "name=Name%20White&age=30";
 
-    const form_data = try std.fmt.allocPrint(testing_arena, req_bytes, .{ form_content.len, form_content });
+    const form_data = try testing_arena.print(req_bytes, .{ form_content.len, form_content });
     var stream_buf_reader = Reader.fixed(form_data);
 
     var write_buffer: [4096]u8 = undefined;
@@ -301,7 +301,7 @@ test "init returns error when content length is missing" {
 
     const form_content = "name=Name%20White&age=30";
 
-    const form_data = try std.fmt.allocPrint(testing_arena, req_bytes, .{form_content});
+    const form_data = try testing_arena.print(req_bytes, .{form_content});
     var stream_buf_reader = Reader.fixed(form_data);
 
     var write_buffer: [4096]u8 = undefined;
@@ -344,7 +344,7 @@ test "init returns error when body is empty" {
 
     const form_content = "";
 
-    const form_data = try std.fmt.allocPrint(testing_arena, req_bytes, .{ form_content.len, form_content });
+    const form_data = try testing_arena.print(req_bytes, .{ form_content.len, form_content });
     var stream_buf_reader = Reader.fixed(form_data);
 
     var write_buffer: [4096]u8 = undefined;

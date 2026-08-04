@@ -37,14 +37,12 @@ pub fn Client(comptime State: type) type {
             const formatted_headers = headers_buf[0..headers_writer.end];
 
             const req_str = if (body) |b|
-                try std.fmt.allocPrint(
-                    self.arena,
+                try self.arena.print(
                     "{s} {s} HTTP/1.1\r\nHost: localhost\r\n{s}Content-Length: {d}\r\n\r\n{s}",
                     .{ @tagName(method), path, formatted_headers, b.len, b },
                 )
             else
-                try std.fmt.allocPrint(
-                    self.arena,
+                try self.arena.print(
                     "{s} {s} HTTP/1.1\r\nHost: localhost\r\n{s}\r\n",
                     .{ @tagName(method), path, formatted_headers },
                 );
