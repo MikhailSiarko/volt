@@ -14,24 +14,27 @@ const middleware = if (volt_options.middleware_enabled) @import("middleware/root
 const Middleware = if (volt_options.middleware_enabled) middleware.Middleware else void;
 const Next = if (volt_options.middleware_enabled) middleware.Next else void;
 
-pub fn Router(comptime State: type) type {
+pub fn Router(comptime Config: anytype) type {
+    const config_info = @typeInfo(@TypeOf(Config));
+    const State = if (config_info == .type) Config else Config[0];
+    const mws = if (config_info == .type) .{} else Config[1];
+
+    if (comptime !volt_options.middleware_enabled and mws.len > 0) {
+        @compileError("Built-in middleware features are not enabled: set 'middleware_enabled' option to 'true' in volt's dependency import");
+    }
+
     return struct {
         const Self = @This();
 
         state: State,
         routes: std.StringHashMap(Route),
         parametric_routes: std.ArrayList(ParametricRoute),
-        middlewares: if (volt_options.middleware_enabled) std.ArrayListUnmanaged(Middleware) else void,
-
-        const VTable = struct {
-            execute: *const fn (*const anyopaque, Context, State) anyerror!Response,
-        };
 
         const Handler = struct {
             const Self = @This();
 
             ptr: *const anyopaque,
-            vtable: VTable,
+            execute_fn: *const fn (ptr: *const anyopaque, ctx: Context, state: State) anyerror!Response,
 
             pub fn init(comptime Fn: type, h: *const anyopaque) @This() {
                 const impl = struct {
@@ -60,14 +63,12 @@ pub fn Router(comptime State: type) type {
 
                 return .{
                     .ptr = h,
-                    .vtable = .{
-                        .execute = impl.exec,
-                    },
+                    .execute_fn = impl.exec,
                 };
             }
 
             pub fn execute(self: *const Handler, ctx: Context, state: State) !Response {
-                return self.vtable.execute(self.ptr, ctx, state);
+                return self.execute_fn(self.ptr, ctx, state);
             }
         };
 
@@ -115,7 +116,6 @@ pub fn Router(comptime State: type) type {
                 .state = state,
                 .routes = .init(allocator),
                 .parametric_routes = .empty,
-                .middlewares = if (comptime volt_options.middleware_enabled) .empty else {},
             };
         }
 
@@ -124,9 +124,6 @@ pub fn Router(comptime State: type) type {
         /// This method should be called when the router is no longer needed
         /// to free all allocated route handlers and mappings.
         pub fn deinit(self: *Self, allocator: Allocator) void {
-            if (comptime volt_options.middleware_enabled) {
-                self.middlewares.deinit(allocator);
-            }
             var it = self.routes.iterator();
             while (it.next()) |entry| {
                 entry.value_ptr.handlers.deinit();
@@ -140,19 +137,6 @@ pub fn Router(comptime State: type) type {
                 allocator.free(p_route.pattern);
             }
             self.parametric_routes.deinit(allocator);
-        }
-
-        /// Registers a middleware into the router pipeline chain.
-        ///
-        /// Parameters:
-        /// - `allocator`: Memory allocator for storing middleware handles
-        /// - `mw`: Middleware function `fn(*Context, *Next) !Response` or struct pointer with an `exec` method
-        pub fn use(self: *Self, allocator: Allocator, mw: anytype) !void {
-            if (comptime !volt_options.middleware_enabled) {
-                @compileError("router.use requires 'middleware_enabled' option to be true");
-            }
-            const item = middleware.makeMiddleware(mw);
-            try self.middlewares.append(allocator, item);
         }
 
         /// Registers a GET route handler.
@@ -280,51 +264,6 @@ pub fn Router(comptime State: type) type {
             }
         }
 
-        const Runner = struct {
-            index: usize = 0,
-            middlewares: []const Middleware,
-            target_handler: Handler,
-            state: State,
-
-            pub fn nextInterface(self: *Runner) Next {
-                const impl = struct {
-                    fn exec(ptr: *const anyopaque, ctx: *Context) anyerror!Response {
-                        const self_ptr: *Runner = @ptrCast(@alignCast(@constCast(ptr)));
-                        return self_ptr.step(ctx);
-                    }
-                };
-                return .{
-                    .ptr = self,
-                    .vtable = &.{ .exec = impl.exec },
-                };
-            }
-
-            pub fn step(self: *Runner, ctx: *Context) anyerror!Response {
-                if (self.index < self.middlewares.len) {
-                    const mw = self.middlewares[self.index];
-                    self.index += 1;
-                    var nxt = self.nextInterface();
-                    return mw.execute(ctx, &nxt);
-                }
-                return self.target_handler.execute(ctx.*, self.state);
-            }
-        };
-
-        fn executePipeline(self: *const Self, handler: Handler, ctx: *Context) !Response {
-            if (comptime volt_options.middleware_enabled) {
-                if (self.middlewares.items.len > 0) {
-                    var runner: Runner = .{
-                        .middlewares = self.middlewares.items,
-                        .target_handler = handler,
-                        .state = self.state,
-                    };
-                    var nxt = runner.nextInterface();
-                    return nxt.exec(ctx);
-                }
-            }
-            return handler.execute(ctx.*, self.state);
-        }
-
         pub fn dispatch(self: *const Self, io: std.Io, allocator: Allocator, req: *HttpRequest) !Response {
             var ctx: Context = .init(
                 io,
@@ -336,7 +275,7 @@ pub fn Router(comptime State: type) type {
             var allowed_methods = std.EnumSet(std.http.Method).empty;
 
             if (self.findHandler(&ctx, target, method, &allowed_methods)) |handler| {
-                return self.executePipeline(handler, &ctx);
+                return handler.execute(ctx, self.state);
             }
             if (allowed_methods.count() > 0) {
                 return .text(allocator, .method_not_allowed, "Method Not Allowed", null);
@@ -425,8 +364,8 @@ pub fn Router(comptime State: type) type {
             return null;
         }
 
-        fn executeHandler(self: *const Self, handler: Router(State).Handler, ctx: *Context) !void {
-            const res = self.executePipeline(handler, ctx) catch |err| {
+        fn executeHandler(self: *const Self, handler: Handler, ctx: *Context) !void {
+            const res = handler.execute(ctx.*, self.state) catch |err| {
                 try ctx.raw_req.respond(@errorName(err), .{ .status = .internal_server_error });
                 return;
             };
@@ -587,6 +526,11 @@ pub fn Router(comptime State: type) type {
             const ret = @typeInfo(func.@"fn".return_type.?);
             if (ret != .error_union or ret.error_union.payload != Response) {
                 @compileError("handler must return !Response");
+            }
+
+            if (comptime volt_options.middleware_enabled and mws.len > 0) {
+                const Chained = middleware.Chain(State, mws, handler);
+                return .init(@TypeOf(Chained.exec), @ptrCast(&Chained.exec));
             }
 
             return .init(Fn, @ptrCast(&handler));
@@ -865,9 +809,6 @@ test "router duplicates route path keys on registration" {
 test "middleware executes in order and modifies response header" {
     if (comptime !volt_options.middleware_enabled) return;
 
-    var router: Router(void) = .init(std.testing.allocator, {});
-    defer router.deinit(std.testing.allocator);
-
     const mw = struct {
         fn addHeader(ctx: *Context, next: *Next) !Response {
             var res = try next.exec(ctx);
@@ -880,7 +821,9 @@ test "middleware executes in order and modifies response header" {
         }
     };
 
-    try router.use(std.testing.allocator, mw.addHeader);
+    var router: Router(.{ void, .{mw.addHeader} }) = .init(std.testing.allocator, {});
+    defer router.deinit(std.testing.allocator);
+
     try router.get(std.testing.allocator, "/test", mw.handler);
 
     const req_bytes = "GET /test HTTP/1.1\r\n\r\n";
@@ -900,11 +843,9 @@ test "middleware executes in order and modifies response header" {
 test "built-in requestId and cors middlewares" {
     if (comptime !volt_options.middleware_enabled) return;
 
-    var router: Router(void) = .init(std.testing.allocator, {});
+    var router: Router(.{ void, .{ middleware.requestId, middleware.cors } }) = .init(std.testing.allocator, {});
     defer router.deinit(std.testing.allocator);
 
-    try router.use(std.testing.allocator, middleware.requestId);
-    try router.use(std.testing.allocator, middleware.cors);
     try router.get(std.testing.allocator, "/ping", struct {
         fn ping(ctx: Context) !Response {
             return Response.text(ctx.req_arena, .ok, "pong", null);
@@ -928,10 +869,9 @@ test "built-in requestId and cors middlewares" {
 test "recovery middleware intercepts error and returns 500" {
     if (comptime !volt_options.middleware_enabled) return;
 
-    var router: Router(void) = .init(std.testing.allocator, {});
+    var router: Router(.{ void, .{middleware.recovery} }) = .init(std.testing.allocator, {});
     defer router.deinit(std.testing.allocator);
 
-    try router.use(std.testing.allocator, middleware.recovery);
     try router.get(std.testing.allocator, "/faulty", struct {
         fn faulty(_: Context) !Response {
             return error.DatabaseConnectionFailed;
@@ -949,4 +889,39 @@ test "recovery middleware intercepts error and returns 500" {
 
     const output = write_buffer[0..stream_buf_writer.end];
     try std.testing.expect(std.mem.find(u8, output, "500 Internal Server Error") != null);
+}
+
+test "comptime static middleware chain" {
+    if (comptime !volt_options.middleware_enabled) return;
+
+    var router: Router(void) = .init(std.testing.allocator, {});
+    defer router.deinit(std.testing.allocator);
+
+    const mw = struct {
+        fn addHeader(ctx: *Context, next: *Next) !Response {
+            var res = try next.exec(ctx);
+            try res.setHeader(ctx.req_arena, "X-Static-Chained", "true");
+            return res;
+        }
+
+        fn handler(ctx: Context) !Response {
+            return Response.text(ctx.req_arena, .ok, "hello static chain", null);
+        }
+    };
+
+    const chained_handler = middleware.Chain(void, .{mw.addHeader}, mw.handler).exec;
+    try router.get(std.testing.allocator, "/static", chained_handler);
+
+    const req_bytes = "GET /static HTTP/1.1\r\n\r\n";
+    var stream_buf_reader = std.Io.Reader.fixed(req_bytes);
+    var write_buffer: [4096]u8 = undefined;
+    var stream_buf_writer = std.Io.Writer.fixed(&write_buffer);
+    var http_server = std.http.Server.init(&stream_buf_reader, &stream_buf_writer);
+    var req = try http_server.receiveHead();
+
+    try router.handleRequest(std.testing.io, std.testing.allocator, &req);
+
+    const output = write_buffer[0..stream_buf_writer.end];
+    try std.testing.expect(std.mem.find(u8, output, "X-Static-Chained: true") != null);
+    try std.testing.expect(std.mem.find(u8, output, "hello static chain") != null);
 }

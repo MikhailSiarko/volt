@@ -12,7 +12,11 @@ fn extract(comptime name: []const u8, arena: Allocator, req: *Request) Allocator
     var query_it = QueryIterator.init(req.head.target) orelse return null;
     return while (query_it.next()) |entry| {
         const value = entry.value orelse continue;
-        const key = try url.decode(arena, entry.key);
+        const key = if (std.ascii.eqlIgnoreCase(entry.key, name))
+            entry.key
+        else
+            try url.decode(arena, entry.key);
+
         if (std.ascii.eqlIgnoreCase(key, name)) {
             const decoded_value = try url.decode(arena, value);
             break decoded_value;
@@ -29,6 +33,10 @@ pub fn Query(comptime name: []const u8) type {
 
         pub fn fromContext(ctx: Context) Self {
             return .{ .result = extract(name, ctx.req_arena, ctx.raw_req) };
+        }
+
+        pub fn init(ctx: Context) Self {
+            return fromContext(ctx);
         }
     };
 }

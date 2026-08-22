@@ -75,11 +75,21 @@ fn extractUrlEncodedFormData(
         var kv_it = std.mem.splitScalar(u8, pair, '=');
         const key = kv_it.next() orelse return FormError.EmptyFormDataKey;
         const value = kv_it.next() orelse return FormError.EmptyFormDataValue;
-        const key_decoded = try url.decode(arena, key);
-        const value_decoded = try url.decode(arena, value);
+        var matched = false;
+        inline for (type_info.@"struct".field_names) |field_name| {
+            if (std.mem.eql(u8, field_name, key)) {
+                matched = true;
+            }
+        }
+
+        const key_decoded = if (matched)
+            key
+        else
+            try url.decode(arena, key);
 
         inline for (type_info.@"struct".field_names, type_info.@"struct".field_types) |field_name, field_type| {
             if (std.mem.eql(u8, field_name, key_decoded)) {
+                const value_decoded = try url.decode(arena, value);
                 @field(out, field_name) = try url.parse(field_type, value_decoded);
             }
         }
@@ -92,16 +102,15 @@ fn extract(comptime T: type, arena: Allocator, req: *Request) FormError!*T {
     const content_type = req.head.content_type orelse return FormError.MissingContentType;
     const content_length = req.head.content_length orelse return FormError.MissingContentLength;
     if (content_length == 0) return FormError.EmptyBody;
-    const buff = try arena.alloc(u8, content_length);
-    defer arena.free(buff);
+    const content = try arena.alloc(u8, content_length);
 
     const reader = req.server.reader.bodyReader(
-        buff,
+        content,
         req.head.transfer_encoding,
         content_length,
     );
 
-    const content = try reader.readAlloc(arena, content_length);
+    try reader.readSliceAll(content);
     if (std.mem.startsWith(u8, content_type, "multipart/form-data")) {
         const boundary_prefix = "boundary=";
         const boundary_pos = std.mem.findLast(u8, content_type, boundary_prefix) orelse
@@ -114,9 +123,9 @@ fn extract(comptime T: type, arena: Allocator, req: *Request) FormError!*T {
         return extractMultipartFormData(T, arena, delimeter, content);
     } else if (std.mem.eql(u8, content_type, "application/x-www-form-urlencoded")) {
         return extractUrlEncodedFormData(T, arena, content);
-    } else {
-        return FormError.UnsupportedContentType;
     }
+
+    return FormError.UnsupportedContentType;
 }
 
 pub fn Form(comptime T: type) type {
@@ -127,6 +136,10 @@ pub fn Form(comptime T: type) type {
 
         pub fn fromContext(ctx: Context) Self {
             return .{ .result = extract(T, ctx.req_arena, ctx.raw_req) };
+        }
+
+        pub fn init(ctx: Context) Self {
+            return fromContext(ctx);
         }
     };
 }

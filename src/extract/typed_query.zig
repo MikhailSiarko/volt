@@ -39,7 +39,18 @@ fn extract(comptime T: type, arena: Allocator, req: *Request) TypedQueryError!?*
 
     while (query_it.next()) |entry| {
         const value = entry.value orelse continue;
-        const key = try url.decode(arena, entry.key);
+
+        var matched = false;
+        inline for (field_names) |field_name| {
+            if (std.ascii.eqlIgnoreCase(entry.key, field_name)) {
+                matched = true;
+            }
+        }
+
+        const key = if (matched)
+            entry.key
+        else
+            try url.decode(arena, entry.key);
 
         inline for (field_names, field_types) |field_name, field_type| {
             if (std.ascii.eqlIgnoreCase(key, field_name)) {
@@ -62,6 +73,10 @@ pub fn TypedQuery(comptime T: type) type {
 
         pub fn fromContext(ctx: Context) Self {
             return .{ .result = extract(T, ctx.req_arena, ctx.raw_req) };
+        }
+
+        pub fn init(ctx: Context) Self {
+            return fromContext(ctx);
         }
     };
 }

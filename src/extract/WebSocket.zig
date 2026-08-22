@@ -23,6 +23,10 @@ pub fn fromContext(ctx: Context) Self {
     return .{ .result = extract(ctx.raw_req) };
 }
 
+pub fn init(ctx: Context) Self {
+    return fromContext(ctx);
+}
+
 pub fn onConnected(self: *const Self, handler: anytype, args: anytype) !void {
     var socket = try self.result;
     const args_type_info = @typeInfo(@TypeOf(args));

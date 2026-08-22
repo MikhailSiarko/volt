@@ -57,6 +57,10 @@ pub fn Json(comptime T: type) type {
         pub fn fromContext(ctx: Context) Self {
             return .{ .result = extract(T, ctx.req_arena, ctx.raw_req) };
         }
+
+        pub fn init(ctx: Context) Self {
+            return fromContext(ctx);
+        }
     };
 }
 

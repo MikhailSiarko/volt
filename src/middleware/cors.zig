@@ -31,7 +31,7 @@ pub const Cors = struct {
             res.attributes = .{
                 .status = .no_content,
                 .content = &.{},
-                .headers = &.{},
+                .headers = .empty,
             };
             try self.applyHeaders(ctx, &res);
             return res;

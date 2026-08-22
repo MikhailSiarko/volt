@@ -4,10 +4,37 @@ const HttpStatus = std.http.Status;
 const HttpRequest = std.http.Server.Request;
 const HttpHeader = std.http.Header;
 
+const HeadersList = struct {
+    static_buf: [4]HttpHeader = undefined,
+    len: u8 = 0,
+    dynamic: std.ArrayListUnmanaged(HttpHeader) = .empty,
+
+    pub const empty: @This() = .{};
+
+    pub fn append(self: *HeadersList, arena: Allocator, header: HttpHeader) !void {
+        if (self.dynamic.capacity > 0) {
+            try self.dynamic.append(arena, header);
+        } else if (self.len < 4) {
+            self.static_buf[self.len] = header;
+            self.len += 1;
+        } else {
+            try self.dynamic.appendSlice(arena, self.static_buf[0..self.len]);
+            try self.dynamic.append(arena, header);
+        }
+    }
+
+    pub fn slice(self: *const HeadersList) []const HttpHeader {
+        if (self.dynamic.capacity > 0) {
+            return self.dynamic.items;
+        }
+        return self.static_buf[0..self.len];
+    }
+};
+
 const Attributes = struct {
     status: HttpStatus,
     content: []const u8,
-    headers: []const HttpHeader = &.{},
+    headers: HeadersList = .empty,
 };
 
 const Self = @This();
@@ -21,13 +48,13 @@ fn intoHttpResponse(
     content_type: []const u8,
     extra_headers: ?[]const HttpHeader,
 ) !Self {
-    const content_headers = [_]HttpHeader{
-        .{ .name = "Content-Type", .value = content_type },
-    };
-    const headers: []const HttpHeader = if (extra_headers) |eh|
-        try std.mem.concat(arena, HttpHeader, &.{ &content_headers, eh })
-    else
-        try arena.dupe(HttpHeader, &content_headers);
+    var headers: HeadersList = .empty;
+    try headers.append(arena, .{ .name = "Content-Type", .value = content_type });
+    if (extra_headers) |eh| {
+        for (eh) |h| {
+            try headers.append(arena, h);
+        }
+    }
 
     return .{
         .attributes = .{
@@ -147,14 +174,14 @@ pub fn html(
 /// Sets or appends an HTTP header on the response.
 pub fn setHeader(self: *Self, arena: Allocator, name: []const u8, value: []const u8) !void {
     if (self.attributes) |*attr| {
-        const new_header: HttpHeader = .{ .name = name, .value = value };
-        const new_headers = try std.mem.concat(arena, HttpHeader, &.{ attr.headers, &.{new_header} });
-        attr.headers = new_headers;
+        try attr.headers.append(arena, .{ .name = name, .value = value });
     } else {
+        var headers: HeadersList = .empty;
+        try headers.append(arena, .{ .name = name, .value = value });
         self.attributes = .{
             .status = .ok,
             .content = &.{},
-            .headers = try arena.dupe(HttpHeader, &.{.{ .name = name, .value = value }}),
+            .headers = headers,
         };
     }
 }
@@ -165,7 +192,7 @@ pub fn send(self: Self, req: *HttpRequest) !void {
     if (self.attributes) |info| {
         return req.respond(info.content, .{
             .status = info.status,
-            .extra_headers = info.headers,
+            .extra_headers = info.headers.slice(),
         });
     }
 }

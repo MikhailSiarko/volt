@@ -49,10 +49,9 @@ pub fn init(io: std.Io, options: ServerOptions) !Self {
 /// The server will continue running until interrupted or an error occurs.
 pub fn listen(
     self: *Self,
-    comptime State: type,
     allocator: Allocator,
     address: IpAddress,
-    router: *const Router(State),
+    router: anytype,
 ) !void {
     var server = try IpAddress.listen(
         &address,
@@ -70,7 +69,7 @@ pub fn listen(
     try fixed_writer.flush();
 
     log.info("Listening on http://{s}", .{buffer[0..fixed_writer.end]});
-    try self.acceptConnections(State, allocator, router, &server, &tasks);
+    try self.acceptConnections(allocator, router, &server, &tasks);
     const graceful_shutdown_timeout: std.Io.Clock.Duration = .{
         .raw = std.Io.Duration.fromSeconds(@intCast(self.options.shutdown_timeout_seconds)),
         .clock = .real,
@@ -80,12 +79,12 @@ pub fn listen(
 
 fn acceptConnections(
     self: *Self,
-    comptime State: type,
     allocator: Allocator,
-    router: *const Router(State),
+    router: anytype,
     server: *std.Io.net.Server,
     tasks: *std.Io.Group,
 ) !void {
+    const RouterType = @TypeOf(router);
     while (true) {
         const conn = server.accept(self.io) catch |err| switch (err) {
             error.Canceled => return,
@@ -93,9 +92,9 @@ fn acceptConnections(
         };
 
         if (builtin.single_threaded) {
-            tasks.async(self.io, Router(State).handle, .{ router, self.io, allocator, conn });
+            tasks.async(self.io, RouterType.handle, .{ router, self.io, allocator, conn });
         } else {
-            try tasks.concurrent(self.io, Router(State).handle, .{ router, self.io, allocator, conn });
+            try tasks.concurrent(self.io, RouterType.handle, .{ router, self.io, allocator, conn });
         }
     }
 }

@@ -25,6 +25,10 @@ pub fn Header(comptime name: []const u8) type {
         pub fn fromContext(ctx: Context) Self {
             return extract(name, ctx.raw_req);
         }
+
+        pub fn init(ctx: Context) Self {
+            return fromContext(ctx);
+        }
     };
 }
 

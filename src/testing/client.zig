@@ -2,15 +2,23 @@ const std = @import("std");
 const Router = @import("../router.zig").Router;
 const Response = @import("core").Response;
 
-pub fn Client(comptime State: type) type {
+pub fn Client(comptime Arg: type) type {
+    const RouterType = comptime type_block: {
+        if (@typeInfo(Arg) == .@"struct" and @hasDecl(Arg, "handle")) {
+            break :type_block Arg;
+        } else {
+            break :type_block Router(Arg);
+        }
+    };
+
     return struct {
         const Self = @This();
 
-        router: *Router(State),
+        router: *RouterType,
         io: std.Io,
         arena: std.mem.Allocator,
 
-        pub fn init(io: std.Io, arena: std.mem.Allocator, router: *Router(State)) Self {
+        pub fn init(io: std.Io, arena: std.mem.Allocator, router: *RouterType) Self {
             return .{
                 .router = router,
                 .io = io,

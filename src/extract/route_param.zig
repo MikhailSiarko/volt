@@ -13,8 +13,10 @@ fn extract(
     route_pattern: ?[]const u8,
     req: *Request,
 ) AllocatorError!?[]const u8 {
-    const decoded_target = try url.decode(arena, req.head.target);
-    return resolveValue(name, route_pattern, decoded_target);
+    const raw_target = req.head.target;
+    const req_path = if (std.mem.findScalar(u8, raw_target, '?')) |idx| raw_target[0..idx] else raw_target;
+    const decoded_path = try url.decode(arena, req_path);
+    return resolveValue(name, route_pattern, decoded_path);
 }
 
 fn resolveValue(
@@ -80,6 +82,10 @@ pub fn RouteParam(comptime name: []const u8) type {
 
         pub fn fromContext(ctx: Context) Self {
             return .{ .result = extract(name, ctx.req_arena, ctx.route_pattern, ctx.raw_req) };
+        }
+
+        pub fn init(ctx: Context) Self {
+            return fromContext(ctx);
         }
     };
 }
