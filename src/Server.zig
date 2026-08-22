@@ -85,6 +85,10 @@ fn acceptConnections(
     tasks: *std.Io.Group,
 ) !void {
     const RouterType = @TypeOf(router);
+    const ImplType = switch (@typeInfo(RouterType)) {
+        .pointer => |ptr| ptr.child,
+        else => RouterType,
+    };
     while (true) {
         const conn = server.accept(self.io) catch |err| switch (err) {
             error.Canceled => return,
@@ -92,9 +96,9 @@ fn acceptConnections(
         };
 
         if (builtin.single_threaded) {
-            tasks.async(self.io, RouterType.handle, .{ router, self.io, allocator, conn });
+            tasks.async(self.io, ImplType.handle, .{ router, self.io, allocator, conn });
         } else {
-            try tasks.concurrent(self.io, RouterType.handle, .{ router, self.io, allocator, conn });
+            try tasks.concurrent(self.io, ImplType.handle, .{ router, self.io, allocator, conn });
         }
     }
 }
